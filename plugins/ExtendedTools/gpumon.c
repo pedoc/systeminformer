@@ -11,6 +11,7 @@
  */
 
 #include "exttools.h"
+#include <devguid.h>
 #include <cfgmgr32.h>
 #include <ntddvdeo.h>
 #include <d3d11.h>
@@ -181,6 +182,198 @@ BOOLEAN EtpIsGpuSoftwareDevice(
     }
 
     return FALSE;
+}
+
+// HardwareDevices!GraphicsQueryPropertyString
+NTSTATUS EtpQueryPropertyString(
+    _In_ D3DKMT_HANDLE AdapterHandle,
+    _In_ PPH_STRINGREF PropertyName,
+    _Out_ PPH_STRING* String
+    )
+{
+    NTSTATUS status;
+    ULONG regInfoSize;
+    D3DDDI_QUERYREGISTRY_INFO* regInfo;
+
+    *String = NULL;
+
+    regInfoSize = sizeof(D3DDDI_QUERYREGISTRY_INFO) + 512;
+    regInfo = PhAllocateZero(regInfoSize);
+
+    regInfo->QueryType = D3DDDI_QUERYREGISTRY_ADAPTERKEY;
+    regInfo->QueryFlags.TranslatePath = 1;
+    regInfo->ValueType = REG_MULTI_SZ;
+
+    memcpy(regInfo->ValueName, PropertyName->Buffer, PropertyName->Length);
+
+    if (!NT_SUCCESS(status = EtQueryAdapterInformation(
+        AdapterHandle,
+        KMTQAITYPE_QUERYREGISTRY,
+        regInfo,
+        regInfoSize
+        )))
+        goto CleanupExit;
+
+    if (regInfo->Status == D3DDDI_QUERYREGISTRY_STATUS_BUFFER_OVERFLOW)
+    {
+        regInfoSize = regInfo->OutputValueSize;
+        regInfo = PhReAllocate(regInfo, regInfoSize);
+
+        if (!NT_SUCCESS(status = EtQueryAdapterInformation(
+            AdapterHandle,
+            KMTQAITYPE_QUERYREGISTRY,
+            regInfo,
+            regInfoSize
+            )))
+            goto CleanupExit;
+    }
+
+    if (regInfo->Status != D3DDDI_QUERYREGISTRY_STATUS_SUCCESS)
+    {
+        status = STATUS_REGISTRY_IO_FAILED;
+        goto CleanupExit;
+    }
+
+    *String = PhCreateStringEx(regInfo->OutputString, regInfo->OutputValueSize);
+
+CleanupExit:
+
+    PhFree(regInfo);
+
+    return status;
+}
+
+DEFINE_GUID(DXCORE_ADAPTER_ATTRIBUTE_D3D11_GRAPHICS, 0x8c47866b, 0x7583, 0x450d, 0xf0, 0xf0, 0x6b, 0xad, 0xa8, 0x95, 0xaf, 0x4b);
+DEFINE_GUID(DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS, 0x0c9ece4d, 0x2f6e, 0x4f01, 0x8c, 0x96, 0xe8, 0x9e, 0x33, 0x1b, 0x47, 0xb1);
+DEFINE_GUID(DXCORE_ADAPTER_ATTRIBUTE_D3D12_CORE_COMPUTE, 0x248e2800, 0xa793, 0x4724, 0xab, 0xaa, 0x23, 0xa6, 0xde, 0x1b, 0xe0, 0x90);
+DEFINE_GUID(DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML, 0xb71b0d41, 0x1088, 0x422f, 0xa2, 0x7c, 0x2, 0x50, 0xb7, 0xd3, 0xa9, 0x88);
+DEFINE_GUID(DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_MEDIA, 0x8eb2c848, 0x82f6, 0x4b49, 0xaa, 0x87, 0xae, 0xcf, 0xcf, 0x1, 0x74, 0xc6);
+// rev
+DEFINE_GUID(DXCORE_ADAPTER_ATTRIBUTE_WSL, 0x42696D9D, 0xD678, 0x4006, 0xA9, 0x3D, 0x30, 0x0C, 0x35, 0x65, 0xBB, 0xE5);
+
+DEFINE_GUID(DXCORE_HARDWARE_TYPE_ATTRIBUTE_GPU, 0xb69eb219, 0x3ded, 0x4464, 0x97, 0x9f, 0xa0, 0xb, 0xd4, 0x68, 0x70, 0x6);
+DEFINE_GUID(DXCORE_HARDWARE_TYPE_ATTRIBUTE_COMPUTE_ACCELERATOR, 0xe0b195da, 0x58ef, 0x4a22, 0x90, 0xf1, 0x1f, 0x28, 0x16, 0x9c, 0xab, 0x8d);
+DEFINE_GUID(DXCORE_HARDWARE_TYPE_ATTRIBUTE_NPU, 0xd46140c4, 0xadd7, 0x451b, 0x9e, 0x56, 0x6, 0xfe, 0x8c, 0x3b, 0x58, 0xed);
+DEFINE_GUID(DXCORE_HARDWARE_TYPE_ATTRIBUTE_MEDIA_ACCELERATOR, 0x66bdb96a, 0x50b, 0x44c7, 0xa4, 0xfd, 0xd1, 0x44, 0xce, 0xa, 0xb4, 0x43);
+
+// HardwareDevices!_GX_ATTRIBUTES
+typedef union _ET_ATTRIBUTES
+{
+    struct
+    {
+        ULONG TypeGpu : 1;                // DXCORE_HARDWARE_TYPE_ATTRIBUTE_GPU
+        ULONG TypeComputeAccelerator : 1; // DXCORE_HARDWARE_TYPE_ATTRIBUTE_COMPUTE_ACCELERATOR
+        ULONG TypeNpu : 1;                // DXCORE_HARDWARE_TYPE_ATTRIBUTE_NPU
+        ULONG TypeMediaAccelerator : 1;   // DXCORE_HARDWARE_TYPE_ATTRIBUTE_MEDIA_ACCELERATOR
+        ULONG D3D11Graphics : 1;          // DXCORE_ADAPTER_ATTRIBUTE_D3D11_GRAPHICS
+        ULONG D3D12Graphics : 1;          // DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS
+        ULONG D3D12CoreCompute : 1;       // DXCORE_ADAPTER_ATTRIBUTE_D3D12_CORE_COMPUTE
+        ULONG D3D12GenericML : 1;         // DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML
+        ULONG D3D12GenericMedia : 1;      // DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_MEDIA
+        ULONG WSL : 1;                    // DXCORE_ADAPTER_ATTRIBUTE_WSL
+        ULONG Spare : 22;
+    };
+
+    ULONG Flags;
+} ET_ATTRIBUTES, *PET_ATTRIBUTES;
+
+// HardwareDevices!GraphicsQueryAttributes
+NTSTATUS EtpQueryAttributes(
+    _In_ D3DKMT_HANDLE AdapterHandle,
+    _Out_ PET_ATTRIBUTES Attributes
+    )
+{
+    static PH_STRINGREF dxCoreAttributes = PH_STRINGREF_INIT(L"DXCoreAttributes");
+    static PH_STRINGREF dxAttributes = PH_STRINGREF_INIT(L"DXAttributes");
+    NTSTATUS status;
+    PPH_STRING adapterAttributes;
+
+    Attributes->Flags = 0;
+
+    // DXCoreAdapter::QueryAndFillAdapterExtendedProperiesOnPlatform
+    if (!NT_SUCCESS(status = EtpQueryPropertyString(AdapterHandle, &dxCoreAttributes, &adapterAttributes)))
+        if (!NT_SUCCESS(status = EtpQueryPropertyString(AdapterHandle, &dxAttributes, &adapterAttributes)))
+            return status;
+
+    for (PWCHAR attr = adapterAttributes->Buffer;;)
+    {
+        PH_STRINGREF attribute;
+        GUID guid;
+
+        PhInitializeStringRef(&attribute, attr);
+
+        if (!attribute.Length)
+            break;
+
+        attr = PTR_ADD_OFFSET(attr, attribute.Length + sizeof(UNICODE_NULL));
+
+        if (!NT_SUCCESS(status = PhStringToGuid(&attribute, &guid)))
+            break;
+
+        if (IsEqualGUID(&guid, &DXCORE_HARDWARE_TYPE_ATTRIBUTE_GPU))
+        {
+            Attributes->TypeGpu = TRUE;
+            continue;
+        }
+
+        if (IsEqualGUID(&guid, &DXCORE_HARDWARE_TYPE_ATTRIBUTE_COMPUTE_ACCELERATOR))
+        {
+            Attributes->TypeComputeAccelerator = TRUE;
+            continue;
+        }
+
+        if (IsEqualGUID(&guid, &DXCORE_HARDWARE_TYPE_ATTRIBUTE_NPU))
+        {
+            Attributes->TypeNpu = TRUE;
+            continue;
+        }
+
+        if (IsEqualGUID(&guid, &DXCORE_HARDWARE_TYPE_ATTRIBUTE_MEDIA_ACCELERATOR))
+        {
+            Attributes->TypeMediaAccelerator = TRUE;
+            continue;
+        }
+
+        if (IsEqualGUID(&guid, &DXCORE_ADAPTER_ATTRIBUTE_D3D11_GRAPHICS))
+        {
+            Attributes->D3D11Graphics = TRUE;
+            continue;
+        }
+
+        if (IsEqualGUID(&guid, &DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS))
+        {
+            Attributes->D3D12Graphics = TRUE;
+            continue;
+        }
+
+        if (IsEqualGUID(&guid, &DXCORE_ADAPTER_ATTRIBUTE_D3D12_CORE_COMPUTE))
+        {
+            Attributes->D3D12CoreCompute = TRUE;
+            continue;
+        }
+
+        if (IsEqualGUID(&guid, &DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML))
+        {
+            Attributes->D3D12GenericML = TRUE;
+            continue;
+        }
+
+        if (IsEqualGUID(&guid, &DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_MEDIA))
+        {
+            Attributes->D3D12GenericMedia = TRUE;
+            continue;
+        }
+
+        if (IsEqualGUID(&guid, &DXCORE_ADAPTER_ATTRIBUTE_WSL))
+        {
+            Attributes->WSL = TRUE;
+            continue;
+        }
+    }
+
+    PhDereferenceObject(adapterAttributes);
+
+    return status;
 }
 
 PPH_STRING EtpGetNodeEngineTypeString(
@@ -677,29 +870,61 @@ BOOLEAN EtpInitializeD3DStatistics(
     D3DKMT_QUERYSTATISTICS queryStatistics;
     D3DKMT_ADAPTER_PERFDATACAPS perfCaps;
 
-    if (CM_Get_Device_Interface_List_Size(
-        &deviceInterfaceListLength,
-        (PGUID)&GUID_DISPLAY_DEVICE_ARRIVAL,
-        NULL,
-        CM_GET_DEVICE_INTERFACE_LIST_PRESENT
-        ) != CR_SUCCESS)
+    if (PhWindowsVersion >= WINDOWS_10)
     {
-        return FALSE;
+        if (CM_Get_Device_Interface_List_Size(
+            &deviceInterfaceListLength,
+            (PGUID)&GUID_COMPUTE_DEVICE_ARRIVAL,
+            NULL,
+            CM_GET_DEVICE_INTERFACE_LIST_PRESENT
+            ) != CR_SUCCESS)
+        {
+            return FALSE;
+        }
+    }
+    else
+    {
+        if (CM_Get_Device_Interface_List_Size(
+            &deviceInterfaceListLength,
+            (PGUID)&GUID_DISPLAY_DEVICE_ARRIVAL,
+            NULL,
+            CM_GET_DEVICE_INTERFACE_LIST_PRESENT
+            ) != CR_SUCCESS)
+        {
+            return FALSE;
+        }
     }
 
     deviceInterfaceList = PhAllocate(deviceInterfaceListLength * sizeof(WCHAR));
     memset(deviceInterfaceList, 0, deviceInterfaceListLength * sizeof(WCHAR));
 
-    if (CM_Get_Device_Interface_List(
-        (PGUID)&GUID_DISPLAY_DEVICE_ARRIVAL,
-        NULL,
-        deviceInterfaceList,
-        deviceInterfaceListLength,
-        CM_GET_DEVICE_INTERFACE_LIST_PRESENT
-        ) != CR_SUCCESS)
+    if (PhWindowsVersion >= WINDOWS_10)
     {
-        PhFree(deviceInterfaceList);
-        return FALSE;
+        if (CM_Get_Device_Interface_List(
+            (PGUID)&GUID_COMPUTE_DEVICE_ARRIVAL,
+            NULL,
+            deviceInterfaceList,
+            deviceInterfaceListLength,
+            CM_GET_DEVICE_INTERFACE_LIST_PRESENT
+            ) != CR_SUCCESS)
+        {
+            PhFree(deviceInterfaceList);
+            return FALSE;
+        }
+    }
+    else
+    {
+        if (CM_Get_Device_Interface_List(
+            (PGUID)&GUID_DISPLAY_DEVICE_ARRIVAL,
+            NULL,
+            deviceInterfaceList,
+            deviceInterfaceListLength,
+            CM_GET_DEVICE_INTERFACE_LIST_PRESENT
+            ) != CR_SUCCESS)
+        {
+            PhFree(deviceInterfaceList);
+            return FALSE;
+        }
     }
 
     deviceAdapterList = PhCreateList(10);
@@ -721,6 +946,8 @@ BOOLEAN EtpInitializeD3DStatistics(
 
     for (ULONG i = 0; i < deviceAdapterList->Count; i++)
     {
+        ET_ATTRIBUTES attributes;
+
         memset(&openAdapterFromDeviceName, 0, sizeof(D3DKMT_OPENADAPTERFROMDEVICENAME));
         openAdapterFromDeviceName.pDeviceName = PhGetString(deviceAdapterList->Items[i]);
 
@@ -734,6 +961,13 @@ BOOLEAN EtpInitializeD3DStatistics(
                 EtCloseAdapterHandle(openAdapterFromDeviceName.hAdapter);
                 continue;
             }
+        }
+
+        if (NT_SUCCESS(EtpQueryAttributes(openAdapterFromDeviceName.hAdapter, &attributes)) && attributes.TypeNpu)
+        {
+            // TODO(jxy-s) break out the NPUs into their own tracking
+            EtCloseAdapterHandle(openAdapterFromDeviceName.hAdapter);
+            continue;
         }
 
         if (EtGpuSupported)
